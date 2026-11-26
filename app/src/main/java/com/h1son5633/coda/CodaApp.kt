@@ -2,6 +2,7 @@ package com.h1son5633.coda
 
 import android.app.Application
 import com.h1son5633.coda.data.AccountStore
+import com.h1son5633.coda.data.CrashReporter
 import com.h1son5633.coda.net.NeteaseApi
 import com.h1son5633.coda.playback.PlayerController
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +22,7 @@ class CodaApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashReporter.install(this)
         accountStore = AccountStore(this)
         api = NeteaseApi(
             deviceId = accountStore.deviceId,
@@ -28,6 +30,10 @@ class CodaApp : Application() {
             cookieSink = { accountStore.saveCookies(it) }
         )
         player = PlayerController(this, api, appScope)
-        player.connect()
+        try {
+            player.connect()
+        } catch (e: Exception) {
+            CrashReporter.record(this, e)
+        }
     }
 }
