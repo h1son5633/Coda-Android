@@ -64,7 +64,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.changedToUp
-import androidx.compose.ui.input.pointer.changedToUpOrCanceled
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -80,6 +79,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Bottom space pages must reserve for the floating chrome (mini player + dock). */
@@ -460,11 +460,11 @@ private fun DockTabBar(selected: Int, onSelect: (Int) -> Unit) {
                                     val c = event.changes
                                         .firstOrNull { it.id == change.id } ?: break
                                     when {
-                                        c.changedToUp() -> released = true
-                                        c.changedToUpOrCanceled() -> {
+                                        c.isCanceled -> {
                                             released = true
                                             cancelled = true
                                         }
+                                        c.changedToUp() -> released = true
                                         c.positionChanged() -> {
                                             tracker.addPosition(
                                                 c.uptimeMillis, c.position
@@ -472,7 +472,7 @@ private fun DockTabBar(selected: Int, onSelect: (Int) -> Unit) {
                                             val x = (c.position.x /
                                                 density.density).dp - 8.dp
                                             if (!dragging &&
-                                                kotlin.math.abs(x - startX) > 18.dp
+                                                kotlin.math.abs((x - startX).value) > 18f
                                             ) {
                                                 dragging = true
                                             }
