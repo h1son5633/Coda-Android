@@ -50,6 +50,9 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        // Second connect attempt at Activity time: Application.onCreate can
+        // be too early for media-session resolution on some ROMs.
+        (application as CodaApp).player.connect()
         val savedCrash = CrashReporter.readLastCrash(this)
         setContent {
             CodaAppTheme {

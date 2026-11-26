@@ -56,16 +56,49 @@ class PlayerController(
     private val _state = MutableStateFlow(PlayerUiState())
     val state: StateFlow<PlayerUiState> = _state.asStateFlow()
 
+    private var connecting = false
+    private var connectAttempts = 0
+    private var pendingPlay = false
+
     fun connect() {
-        if (controller != null) return
-        val token = SessionToken(
-            appContext,
-            ComponentName(appContext, PlaybackService::class.java)
-        )
-        val future = MediaController.Builder(appContext, token).buildAsync()
-        future.addListener({
-            controller = future.get().also { attachListeners(it) }
-        }, MoreExecutors.directExecutor())
+        if (controller != null || connecting) return
+        connecting = true
+        try {
+            val token = SessionToken(
+                appContext,
+                ComponentName(appContext, PlaybackService::class.java)
+            )
+            val future = MediaController.Builder(appContext, token).buildAsync()
+            future.addListener({
+                connecting = false
+                try {
+                    controller = future.get().also { attachListeners(it) }
+                    connectAttempts = 0
+                    if (pendingPlay) {
+                        pendingPlay = false
+                        playCurrent()
+                    }
+                } catch (e: Exception) {
+                    scheduleConnectRetry()
+                }
+            }, MoreExecutors.directExecutor())
+        } catch (e: Exception) {
+            // SessionToken resolution throws on some ROMs during early
+            // Application.onCreate (seen on ColorOS / Android 17: "Failed to
+            // resolve SessionToken"). A playback-connection failure must
+            // never take the whole app down — retry with backoff instead.
+            connecting = false
+            scheduleConnectRetry()
+        }
+    }
+
+    private fun scheduleConnectRetry() {
+        if (connectAttempts >= 6) return
+        connectAttempts++
+        scope.launch {
+            delay(1500L * connectAttempts)
+            connect()
+        }
     }
 
     private fun attachListeners(player: Player) {
@@ -153,7 +186,15 @@ class PlayerController(
                         .build()
                 )
                 .build()
-            controller?.apply {
+            val ctrl = controller
+            if (ctrl == null) {
+                // Not connected yet (e.g. session resolution is retrying):
+                // remember the intent and start as soon as we connect.
+                pendingPlay = true
+                connect()
+                return@launch
+            }
+            ctrl.apply {
                 setMediaItem(item)
                 prepare()
                 play()

@@ -33,7 +33,9 @@ class CodaApp : Application() {
         try {
             player.connect()
         } catch (e: Exception) {
-            CrashReporter.record(this, e)
+            // PlayerController retries connection failures internally; a
+            // playback-connection failure is not an app crash and must not
+            // be recorded as one.
         }
     }
 }
