@@ -105,6 +105,7 @@ private fun DetailHero(
             .padding(horizontal = CodaTheme.pagePadding, vertical = 20.dp)
     ) {
         val coverSize = minOf(maxWidth * 0.68f, 300.dp)
+        val actionRowWidth = minOf(maxWidth, 328.dp)
         Column(
             modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -155,7 +156,7 @@ private fun DetailHero(
             )
             Spacer(Modifier.height(16.dp))
             Row(
-                modifier = Modifier.width(minOf(maxWidth, 328.dp)),
+                modifier = Modifier.width(actionRowWidth),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {

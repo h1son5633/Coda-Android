@@ -109,4 +109,3 @@ private fun hslColor(hue: Double, saturation: Double, lightness: Double): Color 
             floatArrayOf(hue.toFloat(), saturation.toFloat(), lightness.toFloat())
         )
     )
-}

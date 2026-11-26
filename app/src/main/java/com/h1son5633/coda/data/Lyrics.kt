@@ -67,17 +67,19 @@ object Lyrics {
             .sortedBy { it.startMs }
     }
 
-    private fun parseJsonLine(line: String): LyricLine? = try {
-        val obj = JSONObject(line)
-        val start = obj.optLong("t", -1)
-        if (start < 0) return null
-        val segments = obj.optJSONArray("c") ?: return null
-        val text = (0 until segments.length()).joinToString("") {
-            segments.getJSONObject(it).optString("tx")
+    private fun parseJsonLine(line: String): LyricLine? {
+        return try {
+            val obj = JSONObject(line)
+            val start = obj.optLong("t", -1)
+            if (start < 0) return null
+            val segments = obj.optJSONArray("c") ?: return null
+            val text = (0 until segments.length()).joinToString("") {
+                segments.getJSONObject(it).optString("tx")
+            }
+            LyricLine(start, text.trim())
+        } catch (e: Exception) {
+            null
         }
-        LyricLine(start, text.trim())
-    } catch (e: Exception) {
-        null
     }
 
     private fun parseYrcLine(line: String): LyricLine? {
