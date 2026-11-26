@@ -2,6 +2,8 @@ package com.h1son5633.coda.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -11,14 +13,20 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,14 +56,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 
-/** Bottom space pages must reserve for the floating chrome (mini player + tab bar). */
-val ChromeClearance = 142.dp
+/** Bottom space pages must reserve for the floating chrome (mini player + dock). */
+val ChromeClearance = 152.dp
 
 @Composable
 fun Shell(vm: AppViewModel) {
@@ -87,6 +96,9 @@ fun Shell(vm: AppViewModel) {
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         val currentDest = stacks[tab].lastOrNull()
+        // Pages sit below the (transparent) status bar; the app background
+        // paints behind it, FlClash-style edge-to-edge.
+        Box(Modifier.fillMaxSize().statusBarsPadding()) {
         when {
             currentDest is Dest.PlaylistDetail -> PlaylistDetailScreen(
                 vm, currentDest.id,
@@ -129,21 +141,20 @@ fun Shell(vm: AppViewModel) {
                 onLoginRequest = { openLogin() }
             )
         }
+        }
 
-        // Floating chrome: mini player capsule over the glass tab bar.
+        // Floating chrome: mini player capsule over the FlClash-style dock.
         if (!nowPlayingOpen) {
             Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 6.dp),
+                modifier = Modifier.align(Alignment.BottomCenter),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 MiniPlayer(
                     vm,
-                    onOpen = { if (playerState.current != null) nowPlayingOpen = true }
+                    onOpen = { if (playerState.current != null) nowPlayingOpen = true },
+                    modifier = Modifier.padding(horizontal = 21.dp)
                 )
-                GlassTabBar(
+                DockTabBar(
                     selected = tab,
                     onSelect = { newTab ->
                         if (newTab == tab) {
@@ -218,75 +229,114 @@ fun Shell(vm: AppViewModel) {
 
 private data class TabItem(val title: String, val icon: ImageVector)
 
+/**
+ * FlClash-style floating dock (its NavigationDock, measured from iOS's tab
+ * bar): a capsule with 21dp side margins floating max(21dp, nav-bar inset)
+ * above the bottom edge, a selection "lens" that springs between cells,
+ * icon over a 10sp label, accent color only on the selected item.
+ */
 @Composable
-private fun GlassTabBar(selected: Int, onSelect: (Int) -> Unit) {
+private fun DockTabBar(selected: Int, onSelect: (Int) -> Unit) {
     val items = listOf(
         TabItem("推荐", Icons.Filled.Home),
         TabItem("探索", Icons.Filled.Search),
         TabItem("我的", Icons.Filled.AccountCircle)
     )
     val dark = MaterialTheme.colorScheme.background == Color(0xFF101012)
-    Row(
+    val density = LocalDensity.current
+    val navInset = with(density) {
+        WindowInsets.navigationBars.getBottom(density).toDp()
+    }
+    val bottomMargin = maxOf(21.dp, navInset)
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .height(64.dp)
-            .shadow(6.dp, CircleShape)
-            .clip(CircleShape)
-            .background(
-                MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)
-            )
-            .border(
-                1.dp,
-                (if (dark) Color.White else Color.Black).copy(alpha = 0.08f),
-                CircleShape
-            )
-            .padding(4.dp)
+            .padding(horizontal = 21.dp)
+            .padding(bottom = bottomMargin)
     ) {
-        items.forEachIndexed { index, item ->
-            val isSelected = index == selected
-            Column(
+        val innerPadding = 4.dp
+        val cellWidth = (maxWidth - innerPadding * 2) / items.size
+        val lensOffset by animateDpAsState(
+            targetValue = innerPadding + cellWidth * selected,
+            animationSpec = spring(dampingRatio = 0.85f, stiffness = 380f),
+            label = "dockLens"
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(62.dp)
+                .shadow(
+                    12.dp, CircleShape,
+                    ambientColor = Color.Black.copy(alpha = 0.16f),
+                    spotColor = Color.Black.copy(alpha = 0.16f)
+                )
+                .clip(CircleShape)
+                .background(if (dark) Color(0xFF26262B) else Color.White)
+                .border(
+                    1.dp,
+                    (if (dark) Color.White else Color.Black).copy(alpha = 0.06f),
+                    CircleShape
+                )
+        ) {
+            // The sliding lens behind the selected destination.
+            Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .height(56.dp)
+                    .offset(x = lensOffset)
+                    .padding(vertical = innerPadding)
+                    .width(cellWidth)
+                    .fillMaxHeight()
                     .clip(CircleShape)
                     .background(
-                        if (isSelected) {
-                            (if (dark) Color.White else Color.Black).copy(
-                                alpha = if (dark) 0.10f else 0.075f
-                            )
-                        } else Color.Transparent
+                        (if (dark) Color.White else Color.Black).copy(
+                            alpha = if (dark) 0.12f else 0.07f
+                        )
                     )
-                    .clickable { onSelect(index) },
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Icon(
-                    item.icon,
-                    contentDescription = item.title,
-                    modifier = Modifier.size(23.dp),
-                    tint = if (isSelected) CodaTheme.accent
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    item.title,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isSelected) CodaTheme.accent
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                )
+            )
+            Row(Modifier.fillMaxSize().padding(innerPadding)) {
+                items.forEachIndexed { index, item ->
+                    val isSelected = index == selected
+                    val tint = if (isSelected) CodaTheme.accent
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(CircleShape)
+                            .clickable { onSelect(index) },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            item.icon,
+                            contentDescription = item.title,
+                            modifier = Modifier.size(26.dp),
+                            tint = tint
+                        )
+                        Spacer(Modifier.height(1.dp))
+                        Text(
+                            item.title,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = tint
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun MiniPlayer(vm: AppViewModel, onOpen: () -> Unit) {
+private fun MiniPlayer(
+    vm: AppViewModel,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val state by vm.player.state.collectAsState()
     val song = state.current
     val dark = MaterialTheme.colorScheme.background == Color(0xFF101012)
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(52.dp)
             .shadow(6.dp, CircleShape)

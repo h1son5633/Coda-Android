@@ -7,8 +7,11 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.graphics.Color as AndroidColor
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -44,6 +47,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // FlClash-style system bars: fully transparent, icon brightness
+        // follows the (system-driven) theme; content draws underneath.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(
+                AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT
+            ),
+            navigationBarStyle = SystemBarStyle.auto(
+                AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT
+            )
+        )
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
