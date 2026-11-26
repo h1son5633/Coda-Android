@@ -110,7 +110,11 @@ class NeteaseApi(
         put("MUSIC_U", musicU())
     }
 
-    suspend fun eapi(apiPath: String, data: JSONObject): JSONObject =
+    suspend fun eapi(
+        apiPath: String,
+        data: JSONObject,
+        absorbCookies: Boolean = false
+    ): JSONObject =
         withContext(Dispatchers.IO) {
             data.put("header", eapiHeader())
             val params = NeteaseCrypto.eapiParams(apiPath, data.toString())
@@ -122,6 +126,18 @@ class NeteaseApi(
                 .post(FormBody.Builder().add("params", params).build())
                 .build()
             client.newCall(request).execute().use { response ->
+                if (absorbCookies) {
+                    val cookies = mutableMapOf<String, String>()
+                    for (header in response.headers("Set-Cookie")) {
+                        val pair = header.substringBefore(';')
+                        val idx = pair.indexOf('=')
+                        if (idx > 0) {
+                            cookies[pair.substring(0, idx).trim()] =
+                                pair.substring(idx + 1).trim()
+                        }
+                    }
+                    if (cookies.isNotEmpty()) cookieSink(cookies)
+                }
                 JSONObject(response.body?.string() ?: "{}")
             }
         }
@@ -409,27 +425,34 @@ class NeteaseApi(
 
     // ---- QR login --------------------------------------------------------
 
+    /**
+     * QR login, following the original Coda's recipe exactly: eapi (the app
+     * protocol, not weapi) with type 3. A weapi/type-1 session gets its
+     * confirmation intercepted by NetEase risk control ("设备环境异常").
+     */
     suspend fun qrUnikey(): String? {
-        val (res, _) = weapi("login/qrcode/unikey", JSONObject().put("type", 1))
+        val res = eapi(
+            "/api/login/qrcode/unikey",
+            JSONObject().put("type", 3)
+        )
         return res.optString("unikey").takeIf { it.isNotBlank() }
     }
 
     /**
      * Poll QR login state. Codes: 800 expired, 801 waiting, 802 scanned
-     * (awaiting confirm), 803 success — on 803 the login cookies are handed
-     * to the cookie sink.
+     * (awaiting confirm), 803 success — on 803 the auth cookies arrive via
+     * Set-Cookie and are absorbed into the cookie sink.
      */
     suspend fun qrPoll(unikey: String): Int {
-        val (res, cookies) = weapi(
-            "login/qrcode/client/login",
+        val res = eapi(
+            "/api/login/qrcode/client/login",
             JSONObject().apply {
                 put("key", unikey)
-                put("type", 1)
-            }
+                put("type", 3)
+            },
+            absorbCookies = true
         )
-        val code = res.optInt("code")
-        if (code == 803 && cookies.isNotEmpty()) cookieSink(cookies)
-        return code
+        return res.optInt("code")
     }
 
     suspend fun accountProfile(): AccountProfile? {
