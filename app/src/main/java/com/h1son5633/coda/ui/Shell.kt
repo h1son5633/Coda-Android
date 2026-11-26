@@ -2,7 +2,7 @@ package com.h1son5633.coda.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -49,22 +49,41 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.changedToUpOrCanceled
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 /** Bottom space pages must reserve for the floating chrome (mini player + dock). */
-val ChromeClearance = 152.dp
+val ChromeClearance = 170.dp
 
 @Composable
 fun Shell(vm: AppViewModel) {
@@ -229,12 +248,29 @@ fun Shell(vm: AppViewModel) {
 
 private data class TabItem(val title: String, val icon: ImageVector)
 
-/**
- * FlClash-style floating dock (its NavigationDock, measured from iOS's tab
- * bar): a capsule with 21dp side margins floating max(21dp, nav-bar inset)
- * above the bottom edge, a selection "lens" that springs between cells,
- * icon over a 10sp label, accent color only on the selected item.
- */
+// ---- FlClash NavigationDock port -------------------------------------------
+// A faithful Compose port of chen08209/prism_ui's NavigationDock (itself
+// measured from iOS's floating tab bar): a capsule floating 21dp from the
+// sides and max(21dp, nav-bar inset) off the bottom, at most 86dp per
+// destination wide; a selection lens on spring physics that the finger can
+// press, lift, drag and fling; velocity jelly on the lens; a press swell on
+// the whole bar; content turns accent-colored only where the lens covers it.
+
+private fun dockRubberBand(overshoot: Float, limit: Float): Float {
+    val pull = 1f - 1f / (kotlin.math.abs(overshoot) * 0.55f / limit + 1f)
+    return limit * pull * kotlin.math.sign(overshoot)
+}
+
+private fun dockSaturate(value: Float): Float =
+    kotlin.math.tanh(value.toDouble()).toFloat()
+
+private val dockTravelSpring = spring<Float>(dampingRatio = 0.82f, stiffness = 247f)
+private val dockFollowSpring = spring<Float>(dampingRatio = 0.9f, stiffness = 1024f)
+private val dockPressSpring = spring<Float>(dampingRatio = 0.593f, stiffness = 311f)
+private val dockLiftSpring = spring<Float>(dampingRatio = 0.9f, stiffness = 630f)
+private val dockJellySpring = spring<Float>(dampingRatio = 0.4f, stiffness = 100f)
+private val dockTrackSpring = spring<Float>(dampingRatio = 1.0f, stiffness = 2700f)
+
 @Composable
 private fun DockTabBar(selected: Int, onSelect: (Int) -> Unit) {
     val items = listOf(
@@ -248,77 +284,332 @@ private fun DockTabBar(selected: Int, onSelect: (Int) -> Unit) {
         WindowInsets.navigationBars.getBottom(density).toDp()
     }
     val bottomMargin = maxOf(21.dp, navInset)
+    val haptics = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+
+    val lens = remember { Animatable(selected.toFloat()) }
+    val lift = remember { Animatable(0f) }
+    val swell = remember { Animatable(0f) }
+    val jelly = remember { Animatable(0f) }
+    val stretch = remember { Animatable(0f) }
+    var pressedIndex by remember { mutableStateOf<Int?>(null) }
+    var lensTarget by remember { mutableStateOf(selected.toFloat()) }
+    var liftDropJob by remember { mutableStateOf<Job?>(null) }
+
+    // Selection changed from outside the dock (not by a press): follow it.
+    LaunchedEffect(selected) {
+        if (pressedIndex == null) {
+            lensTarget = selected.toFloat()
+            lens.animateTo(selected.toFloat(), dockTravelSpring)
+        }
+    }
+
+    // Jelly: the lens stretches with its speed and squashes while braking.
+    LaunchedEffect(Unit) {
+        var prevVelocity = 0f
+        var prevMillis = 0L
+        while (true) {
+            withFrameMillis { millis ->
+                val velocity = lens.velocity
+                if (prevMillis != 0L) {
+                    val dt = (millis - prevMillis) / 1000f
+                    if (dt > 0.001f) {
+                        val acceleration = (velocity - prevVelocity) / dt
+                        val braking = max(
+                            0f, -acceleration * kotlin.math.sign(velocity)
+                        )
+                        val target = 0.2f * dockSaturate(
+                            kotlin.math.abs(velocity) / 3f
+                        ) - 0.15f * dockSaturate(braking / 25f)
+                        if (kotlin.math.abs(target - jelly.targetValue) > 0.002f) {
+                            scope.launch { jelly.animateTo(target, dockJellySpring) }
+                        }
+                    }
+                }
+                prevVelocity = velocity
+                prevMillis = millis
+            }
+        }
+    }
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 21.dp)
             .padding(bottom = bottomMargin)
+            .padding(top = 8.dp)
     ) {
-        val innerPadding = 4.dp
-        val cellWidth = (maxWidth - innerPadding * 2) / items.size
-        val lensOffset by animateDpAsState(
-            targetValue = innerPadding + cellWidth * selected,
-            animationSpec = spring(dampingRatio = 0.85f, stiffness = 380f),
-            label = "dockLens"
+        val count = items.size
+        val barWidth = minOf(maxWidth, 274.dp)
+        val pad = 4.dp
+        val span = barWidth - pad * 2
+        // Even layout for <=3 destinations, as in the original: each lens is
+        // a touch wider than its cell, neighbours overlapping by 8.
+        val lensWidth = (span + 16.dp) / count
+        val cellWidth = lensWidth - 8.dp
+        val inset = 4.dp
+        fun centerAt(position: Float) =
+            pad + inset + cellWidth * (position + 0.5f)
+        fun positionOf(x: Dp): Float {
+            val raw = ((x - pad - inset) / cellWidth) - 0.5f
+            return when {
+                raw < 0f -> dockRubberBand(raw, 0.35f)
+                raw > (count - 1) -> (count - 1) +
+                    dockRubberBand(raw - (count - 1), 0.35f)
+                else -> raw
+            }
+        }
+        fun indexAt(position: Float): Int =
+            position.roundToInt().coerceIn(0, count - 1)
+
+        val liftNow = lift.value
+        val jellyNow = jelly.value
+        val lensW = (lensWidth + 16.dp * liftNow) * (1f + jellyNow)
+        val lensH = (54.dp + 16.dp * liftNow) * (1f - jellyNow * 1.4f)
+        val lensLeft = centerAt(lens.value) - lensW / 2
+        val lensTop = pad + (54.dp - lensH) / 2
+
+        val barColor = if (dark) Color(0xFF26262B) else Color.White
+        val lensBase = if (dark) Color(0xFF34343A) else Color(0xFFEEEEEF)
+        val onSurface = MaterialTheme.colorScheme.onSurface
+        val wash = 0.08f * liftNow
+        val lensColor = Color(
+            red = onSurface.red * wash + lensBase.red * (1f - wash),
+            green = onSurface.green * wash + lensBase.green * (1f - wash),
+            blue = onSurface.blue * wash + lensBase.blue * (1f - wash)
         )
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(62.dp)
-                .shadow(
-                    12.dp, CircleShape,
-                    ambientColor = Color.Black.copy(alpha = 0.16f),
-                    spotColor = Color.Black.copy(alpha = 0.16f)
-                )
-                .clip(CircleShape)
-                .background(if (dark) Color(0xFF26262B) else Color.White)
-                .border(
-                    1.dp,
-                    (if (dark) Color.White else Color.Black).copy(alpha = 0.06f),
-                    CircleShape
-                )
-        ) {
-            // The sliding lens behind the selected destination.
-            Box(
+        val baseTint = MaterialTheme.colorScheme.onSurfaceVariant
+
+        val itemsRow: @Composable (Color) -> Unit = { color ->
+            Row(
                 modifier = Modifier
-                    .offset(x = lensOffset)
-                    .padding(vertical = innerPadding)
-                    .width(cellWidth)
-                    .fillMaxHeight()
-                    .clip(CircleShape)
-                    .background(
-                        (if (dark) Color.White else Color.Black).copy(
-                            alpha = if (dark) 0.12f else 0.07f
-                        )
-                    )
-            )
-            Row(Modifier.fillMaxSize().padding(innerPadding)) {
-                items.forEachIndexed { index, item ->
-                    val isSelected = index == selected
-                    val tint = if (isSelected) CodaTheme.accent
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                    .fillMaxSize()
+                    .padding(horizontal = pad + inset, vertical = pad)
+            ) {
+                items.forEach { item ->
                     Column(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clip(CircleShape)
-                            .clickable { onSelect(index) },
+                            .width(cellWidth)
+                            .fillMaxHeight(),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
                         Icon(
                             item.icon,
-                            contentDescription = item.title,
-                            modifier = Modifier.size(26.dp),
-                            tint = tint
+                            contentDescription = null,
+                            modifier = Modifier.size(28.dp),
+                            tint = color
                         )
                         Spacer(Modifier.height(1.dp))
                         Text(
                             item.title,
                             fontSize = 10.sp,
+                            lineHeight = 12.sp,
                             fontWeight = FontWeight.Medium,
-                            color = tint
+                            color = color,
+                            modifier = Modifier.padding(bottom = 1.dp)
                         )
+                    }
+                }
+            }
+        }
+
+        val swellScale = 1f + swell.value * min(0.25f, 16f / barWidth.value)
+        val pullDp = stretch.value
+        val barScaleX = swellScale *
+            (1f + kotlin.math.abs(pullDp) / barWidth.value * 0.5f)
+
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            // Hit area: the bar plus an 8dp slop halo, as in the original.
+            Box(
+                modifier = Modifier
+                    .width(barWidth + 16.dp)
+                    .height(78.dp)
+                    .pointerInput(Unit) {
+                        val tracker = VelocityTracker()
+                        awaitPointerEventScope {
+                            while (true) {
+                                val downEvent = awaitPointerEvent()
+                                val change = downEvent.changes
+                                    .firstOrNull { it.changedToDown() } ?: continue
+                                tracker.resetTracking()
+                                tracker.addPosition(
+                                    change.uptimeMillis, change.position
+                                )
+                                val startX =
+                                    (change.position.x / density.density).dp - 8.dp
+                                var dragging = false
+                                var dragIndex = indexAt(positionOf(startX))
+                                pressedIndex = dragIndex
+                                liftDropJob?.cancel()
+                                scope.launch { swell.animateTo(1f, dockPressSpring) }
+                                scope.launch { lift.animateTo(1f, dockLiftSpring) }
+                                lensTarget = dragIndex.toFloat()
+                                scope.launch {
+                                    lens.animateTo(
+                                        dragIndex.toFloat(), dockTravelSpring
+                                    )
+                                }
+                                var released = false
+                                var cancelled = false
+                                while (!released) {
+                                    val event = awaitPointerEvent()
+                                    val c = event.changes
+                                        .firstOrNull { it.id == change.id } ?: break
+                                    when {
+                                        c.changedToUp() -> released = true
+                                        c.changedToUpOrCanceled() -> {
+                                            released = true
+                                            cancelled = true
+                                        }
+                                        c.positionChanged() -> {
+                                            tracker.addPosition(
+                                                c.uptimeMillis, c.position
+                                            )
+                                            val x = (c.position.x /
+                                                density.density).dp - 8.dp
+                                            if (!dragging &&
+                                                kotlin.math.abs(x - startX) > 18.dp
+                                            ) {
+                                                dragging = true
+                                            }
+                                            if (dragging) {
+                                                val over = when {
+                                                    x < 0.dp -> x.value
+                                                    x > barWidth -> (x - barWidth).value
+                                                    else -> 0f
+                                                }
+                                                scope.launch {
+                                                    stretch.animateTo(
+                                                        dockRubberBand(
+                                                            over, 62f * 7f / 32f
+                                                        ),
+                                                        dockTrackSpring
+                                                    )
+                                                }
+                                                val pos = positionOf(x)
+                                                lensTarget = pos
+                                                scope.launch {
+                                                    lens.animateTo(
+                                                        pos, dockFollowSpring
+                                                    )
+                                                }
+                                                val idx = indexAt(pos)
+                                                if (idx != dragIndex) {
+                                                    dragIndex = idx
+                                                    haptics.performHapticFeedback(
+                                                        HapticFeedbackType.TextHandleMove
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                scope.launch { swell.animateTo(0f, dockPressSpring) }
+                                scope.launch {
+                                    stretch.animateTo(0f, dockPressSpring)
+                                }
+                                var commitIndex = dragIndex
+                                if (!cancelled && dragging) {
+                                    val velocity = tracker.calculateVelocity().x /
+                                        density.density
+                                    val lead = velocity / cellWidth.value * 0.1f
+                                    val flung = (lensTarget + lead).roundToInt()
+                                        .coerceIn(dragIndex - 1, dragIndex + 1)
+                                        .coerceIn(0, count - 1)
+                                    if (flung != dragIndex) {
+                                        commitIndex = flung
+                                        haptics.performHapticFeedback(
+                                            HapticFeedbackType.TextHandleMove
+                                        )
+                                    }
+                                }
+                                val targetIndex =
+                                    if (cancelled) selected else commitIndex
+                                lensTarget = targetIndex.toFloat()
+                                scope.launch {
+                                    lens.animateTo(
+                                        targetIndex.toFloat(), dockTravelSpring
+                                    )
+                                }
+                                pressedIndex = null
+                                if (!cancelled && commitIndex != selected) {
+                                    onSelect(commitIndex)
+                                }
+                                // The lens stays lifted until it has fully
+                                // risen and arrived, then falls.
+                                val arrived = targetIndex.toFloat()
+                                liftDropJob = scope.launch {
+                                    snapshotFlow {
+                                        lift.value >= 0.975f &&
+                                            kotlin.math.abs(lens.value - arrived) <= 0.04f
+                                    }.first { it }
+                                    lift.animateTo(0f, dockLiftSpring)
+                                }
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(barWidth)
+                        .height(62.dp)
+                        .graphicsLayer {
+                            scaleX = barScaleX
+                            scaleY = swellScale
+                            translationX = pullDp * density.density
+                        }
+                        .shadow(
+                            12.dp, CircleShape,
+                            ambientColor = Color.Black.copy(alpha = 0.16f),
+                            spotColor = Color.Black.copy(alpha = 0.16f)
+                        )
+                        .clip(CircleShape)
+                        .background(barColor)
+                        .border(
+                            1.dp,
+                            (if (dark) Color.White else Color.Black)
+                                .copy(alpha = 0.06f),
+                            CircleShape
+                        )
+                ) {
+                    // The lens itself.
+                    Box(
+                        modifier = Modifier
+                            .offset(x = lensLeft, y = lensTop)
+                            .size(lensW, lensH)
+                            .clip(CircleShape)
+                            .background(lensColor)
+                    )
+                    itemsRow(baseTint)
+                    // Accent copy of the items, visible only through the
+                    // lens and magnified as the lens lifts (_LensTint).
+                    Box(
+                        modifier = Modifier
+                            .offset(x = lensLeft, y = lensTop)
+                            .size(lensW, lensH)
+                            .clip(CircleShape)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .offset(x = -lensLeft, y = -lensTop)
+                                .size(barWidth, 62.dp)
+                                .graphicsLayer {
+                                    scaleX = 1f + 0.16f * liftNow
+                                    scaleY = 1f + 0.16f * liftNow
+                                    transformOrigin = TransformOrigin(
+                                        (centerAt(lens.value) / barWidth)
+                                            .coerceIn(0f, 1f),
+                                        0.5f
+                                    )
+                                }
+                        ) {
+                            itemsRow(CodaTheme.accent)
+                        }
                     }
                 }
             }
