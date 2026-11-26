@@ -454,16 +454,11 @@ private fun DockTabBar(selected: Int, onSelect: (Int) -> Unit) {
                                     )
                                 }
                                 var released = false
-                                var cancelled = false
                                 while (!released) {
                                     val event = awaitPointerEvent()
                                     val c = event.changes
                                         .firstOrNull { it.id == change.id } ?: break
                                     when {
-                                        c.isCanceled -> {
-                                            released = true
-                                            cancelled = true
-                                        }
                                         c.changedToUp() -> released = true
                                         c.positionChanged() -> {
                                             tracker.addPosition(
@@ -513,7 +508,7 @@ private fun DockTabBar(selected: Int, onSelect: (Int) -> Unit) {
                                     stretch.animateTo(0f, dockPressSpring)
                                 }
                                 var commitIndex = dragIndex
-                                if (!cancelled && dragging) {
+                                if (dragging) {
                                     val velocity = tracker.calculateVelocity().x /
                                         density.density
                                     val lead = velocity / cellWidth.value * 0.1f
@@ -527,8 +522,7 @@ private fun DockTabBar(selected: Int, onSelect: (Int) -> Unit) {
                                         )
                                     }
                                 }
-                                val targetIndex =
-                                    if (cancelled) selected else commitIndex
+                                val targetIndex = commitIndex
                                 lensTarget = targetIndex.toFloat()
                                 scope.launch {
                                     lens.animateTo(
@@ -536,7 +530,7 @@ private fun DockTabBar(selected: Int, onSelect: (Int) -> Unit) {
                                     )
                                 }
                                 pressedIndex = null
-                                if (!cancelled && commitIndex != selected) {
+                                if (commitIndex != selected) {
                                     onSelect(commitIndex)
                                 }
                                 // The lens stays lifted until it has fully
